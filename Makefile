@@ -22,14 +22,22 @@ tidy:
 clean:
 	rm -rf bin
 
-.PHONY: build-migrate migrate-up migrate-down
+.PHONY: build-migrate migrate migrate-up migrate-down migrate-seed migrate-status
 
 build-migrate:
 	mkdir -p bin
 	go build -trimpath -o bin/inflora-migrate ./cmd/migrate
 
+migrate: migrate-up
+
 migrate-up:
-	go run ./cmd/migrate up
+	go run ./cmd/migrate -dir up -target 1
 
 migrate-down:
-	go run ./cmd/migrate down
+	go run ./cmd/migrate -dir down
+
+migrate-seed:
+	ENV=$${ENV:-dev} go run ./cmd/migrate -dir up
+
+migrate-status:
+	go run ./cmd/migrate -dir status

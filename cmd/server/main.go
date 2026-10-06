@@ -1,8 +1,61 @@
-// Package main provides the Phase 0 Saruman service placeholder.
 package main
 
-import "fmt"
+import (
+	"context"
+	"database/sql"
+	"log"
+	"net/http"
+	"time"
+
+	"github.com/frederickmarvel/inflora-saruman/internal/config"
+	"github.com/frederickmarvel/inflora-saruman/internal/handler"
+	"github.com/frederickmarvel/inflora-saruman/internal/subscriber"
+	"github.com/frederickmarvel/inflora-shared/events"
+	"github.com/frederickmarvel/inflora-shared/outbox"
+	infloraruntime "github.com/frederickmarvel/inflora-shared/runtime"
+	_ "github.com/jackc/pgx/v5/stdlib"
+)
 
 func main() {
-	fmt.Println("inflora-saruman: TODO (Phase 6 per BACKEND_BUILD_PLAN.md)")
+	if err := run(context.Background()); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run(ctx context.Context) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	db, err := sql.Open("pgx", cfg.DBDSN)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(20)
+	db.SetMaxIdleConns(5)
+
+	natsCfg := events.NATSConfig{URL: cfg.NATSURL, Name: cfg.ServiceName, Stream: cfg.NATSStream, Subjects: []string{">"}, AckWait: cfg.AckWait, MaxDeliver: cfg.MaxDeliver}
+	publisher, err := events.NewNATSPublisher(natsCfg)
+	if err != nil {
+		return err
+	}
+	defer publisher.Close()
+	natsSubscriber, err := events.NewNATSSubscriber(natsCfg)
+	if err != nil {
+		return err
+	}
+	defer natsSubscriber.Close()
+	dispatcher, err := outbox.NewDispatcher(db, publisher, outbox.DispatcherConfig{Producer: "saruman", WorkerName: "saruman-outbox"})
+	if err != nil {
+		return err
+	}
+
+	httpWorker := &handler.Server{HTTP: &http.Server{Addr: cfg.HTTPAddr, Handler: handler.HealthMux(db), ReadHeaderTimeout: 5 * time.Second}}
+	eventWorker := &subscriber.Worker{Subscriber: natsSubscriber, Processor: &subscriber.Processor{DB: db}}
+	probe := func(probeCtx context.Context) (bool, error) {
+		err := db.PingContext(probeCtx)
+		return err == nil, err
+	}
+	return infloraruntime.Run(ctx, 15*time.Second, 10*time.Second, probe, httpWorker, eventWorker, dispatcher)
 }

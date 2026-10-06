@@ -27,7 +27,7 @@ func TestPostgresMigrationLifecycle(t *testing.T) {
 	if _, err = database.ExecContext(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
 		t.Fatalf("reset schema: %v", err)
 	}
-	runner := migrate.Runner{DB: database, FS: migrations.Files, Environment: "test", AllowDown: true, LockTimeout: 5 * time.Second}
+	runner := migrate.Runner{DB: database, FS: migrations.Files, Environment: "test", AllowDown: true, IncludeSeed: true, LockTimeout: 5 * time.Second}
 
 	var wg sync.WaitGroup
 	errors := make(chan error, 2)
@@ -66,10 +66,10 @@ func TestPostgresMigrationLifecycle(t *testing.T) {
 	assertCount(t, database, `SELECT COUNT(*) FROM pg_tables WHERE schemaname = 'public' AND tablename <> 'schema_migrations'`, 0)
 }
 
-func assertCount(t *testing.T, database *sql.DB, query string, want int) {
+func assertCount(t *testing.T, database *sql.DB, query string, want int, args ...any) {
 	t.Helper()
 	var got int
-	if err := database.QueryRow(query).Scan(&got); err != nil {
+	if err := database.QueryRow(query, args...).Scan(&got); err != nil {
 		t.Fatalf("query count: %v", err)
 	}
 	if got != want {

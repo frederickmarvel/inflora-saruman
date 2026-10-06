@@ -31,13 +31,13 @@ build-migrate:
 migrate: migrate-up
 
 migrate-up:
-	go run ./cmd/migrate -dir up -target 1
+	go run ./cmd/migrate -dir up
 
 migrate-down:
 	go run ./cmd/migrate -dir down
 
 migrate-seed:
-	ENV=$${ENV:-dev} go run ./cmd/migrate -dir up
+	ENV=$${ENV:-dev} go run ./cmd/migrate -dir up -seed
 
 migrate-status:
 	go run ./cmd/migrate -dir status

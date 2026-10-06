@@ -37,6 +37,7 @@ type Runner struct {
 	FS          embed.FS
 	Environment string
 	AllowDown   bool
+	IncludeSeed bool
 	LockTimeout time.Duration
 }
 
@@ -91,8 +92,13 @@ func (r Runner) Run(ctx context.Context, direction Direction, target int64) erro
 			if target > 0 && m.Version > target {
 				break
 			}
-			if m.Name == "seed_dev" && !strings.EqualFold(r.Environment, "dev") && !strings.EqualFold(r.Environment, "test") {
-				return errors.New("migrate: development seed requires ENV=dev or ENV=test")
+			if m.Name == "seed_dev" {
+				if !r.IncludeSeed {
+					continue
+				}
+				if !strings.EqualFold(r.Environment, "dev") && !strings.EqualFold(r.Environment, "test") {
+					return errors.New("migrate: development seed requires ENV=dev or ENV=test")
+				}
 			}
 			applied, err := applied(ctx, conn, m)
 			if err != nil {

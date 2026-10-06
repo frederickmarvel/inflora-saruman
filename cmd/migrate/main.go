@@ -18,6 +18,7 @@ import (
 func main() {
 	direction := flag.String("dir", "up", "up, down, or status")
 	target := flag.Int64("target", 0, "target version (0 means all)")
+	includeSeed := flag.Bool("seed", false, "include the development seed migration (ENV=dev/test only)")
 	flag.Parse()
 	dsn := os.Getenv("DB_DSN")
 	if dsn == "" {
@@ -37,7 +38,7 @@ func main() {
 	if environment == "" {
 		environment = "prod"
 	}
-	err = (migrate.Runner{DB: db, FS: migrations.Files, Environment: environment, AllowDown: allowDown, LockTimeout: 30 * time.Second}).Run(context.Background(), migrate.Direction(*direction), *target)
+	err = (migrate.Runner{DB: db, FS: migrations.Files, Environment: environment, AllowDown: allowDown, IncludeSeed: *includeSeed, LockTimeout: 30 * time.Second}).Run(context.Background(), migrate.Direction(*direction), *target)
 	if err != nil {
 		log.Fatal(err)
 	}

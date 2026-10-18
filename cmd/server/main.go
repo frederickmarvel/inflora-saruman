@@ -5,10 +5,12 @@ import (
 	"database/sql"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/frederickmarvel/inflora-saruman/internal/config"
 	"github.com/frederickmarvel/inflora-saruman/internal/handler"
+	"github.com/frederickmarvel/inflora-saruman/internal/service"
 	"github.com/frederickmarvel/inflora-saruman/internal/subscriber"
 	"github.com/frederickmarvel/inflora-shared/events"
 	"github.com/frederickmarvel/inflora-shared/outbox"
@@ -51,11 +53,21 @@ func run(ctx context.Context) error {
 		return err
 	}
 
-	httpWorker := &handler.Server{HTTP: &http.Server{Addr: cfg.HTTPAddr, Handler: handler.HealthMux(db), ReadHeaderTimeout: 5 * time.Second}}
+	internalKey := os.Getenv("INTERNAL_API_KEY")
+	if internalKey == "" {
+		log.Fatal("INTERNAL_API_KEY is required")
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/", handler.HealthMux(db))
+	review := &handler.ReviewHandler{DB: db, InternalKey: internalKey}
+	mux.HandleFunc("POST /v1/internal/donations/{id}/review", review.Review)
+
+	httpWorker := &handler.Server{HTTP: &http.Server{Addr: cfg.HTTPAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}}
 	eventWorker := &subscriber.Worker{Subscriber: natsSubscriber, Processor: &subscriber.Processor{DB: db}}
+	reviewReconciler := &service.ReviewReconciler{DB: db}
 	probe := func(probeCtx context.Context) (bool, error) {
 		err := db.PingContext(probeCtx)
 		return err == nil, err
 	}
-	return infloraruntime.Run(ctx, 15*time.Second, 10*time.Second, probe, httpWorker, eventWorker, dispatcher)
+	return infloraruntime.Run(ctx, 15*time.Second, 10*time.Second, probe, httpWorker, eventWorker, reviewReconciler, dispatcher)
 }

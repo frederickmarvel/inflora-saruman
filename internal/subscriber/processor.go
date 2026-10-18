@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/frederickmarvel/inflora-saruman/internal/service"
 	"github.com/frederickmarvel/inflora-shared/events"
 	"github.com/frederickmarvel/inflora-shared/inbox"
 	"github.com/frederickmarvel/inflora-shared/keys"
@@ -154,14 +155,19 @@ func (p *Processor) completeTopup(ctx context.Context, tx *sql.Tx, env events.En
 	if payload.CapturedAt.IsZero() {
 		payload.CapturedAt = time.Now().UTC()
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE donations SET status='CHARGED',settlement_status='PENDING',mdr_idr=$2,mdr_rate_bps=$3,gross_charged_idr=$4,platform_fee_idr=$5,net_idr=$6,provider_name=$7,provider_charge_id=$8,payment_method=$9,charged_at=$10 WHERE id=$1`, d.ID, payload.MDRIDR, payload.MDRRateBPS, payload.GrossChargedIDR, payload.PlatformFeeIDR, payload.NetIDR, payload.Provider, payload.ProviderChargeID, payload.PaymentMethod, payload.CapturedAt); err != nil {
+	// Post-hoc review state (CONTRACT_DRIFT D-038): every charged donation is
+	// APPROVED at charge and airs immediately — the flag reason only badges the
+	// dashboard and never delays anything. The rejection decision, if it ever
+	// comes, is a replay-safe takedown handled by the review decision route.
+	flagReason := service.FlagReasonForMessage(d.Message)
+	if _, err = tx.ExecContext(ctx, `UPDATE donations SET status='CHARGED',settlement_status='PENDING',mdr_idr=$2,mdr_rate_bps=$3,gross_charged_idr=$4,platform_fee_idr=$5,net_idr=$6,provider_name=$7,provider_charge_id=$8,payment_method=$9,charged_at=$10,review_status='APPROVED',review_aired_at=$10,review_flag_reason=NULLIF($11,'') WHERE id=$1`, d.ID, payload.MDRIDR, payload.MDRRateBPS, payload.GrossChargedIDR, payload.PlatformFeeIDR, payload.NetIDR, payload.Provider, payload.ProviderChargeID, payload.PaymentMethod, payload.CapturedAt, flagReason); err != nil {
 		return err
 	}
 	entryIDs, correlationID, err := postCapture(ctx, tx, env, payload)
 	if err != nil {
 		return err
 	}
-	charged := donationChargedPayload{DonationChargedEvent: events.DonationChargedEvent{DonationID: d.ID, IntentID: d.IntentID, StreamerID: d.StreamerID, AmountIDR: payload.AmountIDR, MDRIDR: payload.MDRIDR, MDRRateBPS: payload.MDRRateBPS, GrossChargedIDR: payload.GrossChargedIDR, PlatformFeeIDR: payload.PlatformFeeIDR, NetIDR: payload.NetIDR, Currency: "IDR", SettlementStatus: "PENDING", DonorDisplayName: d.DonorName, IsAnonymous: d.Anonymous, Message: d.Message, VoiceURL: d.VoiceURL, VoiceDurationSec: int(d.VoiceDuration.Int64), YouTubeURL: d.YouTubeURL, YouTubeStartSec: int(d.YouTubeStart.Int64), YouTubeEndSec: int(d.YouTubeEnd.Int64), DisplayDurationSec: d.DisplayDuration, ProviderChargeID: payload.ProviderChargeID, ProviderName: payload.Provider, PaymentMethod: payload.PaymentMethod, LedgerEntryIDs: entryIDs, LedgerCorrelationID: correlationID, CapturedAt: payload.CapturedAt}, DisplayRateIDRPerSec: d.DisplayRate, DisplayMinSec: d.DisplayMin, DisplayMaxSec: d.DisplayMax}
+	charged := donationChargedPayload{DonationChargedEvent: events.DonationChargedEvent{DonationID: d.ID, IntentID: d.IntentID, StreamerID: d.StreamerID, AmountIDR: payload.AmountIDR, MDRIDR: payload.MDRIDR, MDRRateBPS: payload.MDRRateBPS, GrossChargedIDR: payload.GrossChargedIDR, PlatformFeeIDR: payload.PlatformFeeIDR, NetIDR: payload.NetIDR, Currency: "IDR", SettlementStatus: "PENDING", DonorDisplayName: d.DonorName, IsAnonymous: d.Anonymous, Message: d.Message, VoiceURL: d.VoiceURL, VoiceDurationSec: int(d.VoiceDuration.Int64), YouTubeURL: d.YouTubeURL, YouTubeStartSec: int(d.YouTubeStart.Int64), YouTubeEndSec: int(d.YouTubeEnd.Int64), DisplayDurationSec: d.DisplayDuration, ProviderChargeID: payload.ProviderChargeID, ProviderName: payload.Provider, PaymentMethod: payload.PaymentMethod, LedgerEntryIDs: entryIDs, LedgerCorrelationID: correlationID, CapturedAt: payload.CapturedAt, ReviewStatus: "APPROVED", ReviewFlagReason: flagReason}, DisplayRateIDRPerSec: d.DisplayRate, DisplayMinSec: d.DisplayMin, DisplayMaxSec: d.DisplayMax}
 	donationID, streamerID, err := parseIDs(d.ID, d.StreamerID)
 	if err != nil {
 		return err

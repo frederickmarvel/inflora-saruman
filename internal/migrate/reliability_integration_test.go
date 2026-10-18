@@ -81,7 +81,7 @@ func TestPostgresMigrationPhase1UpDownReUp(t *testing.T) {
 		t.Fatalf("re-up: %v", err)
 	}
 	// After applying all migrations.
-	assertCount(t, database, `SELECT COUNT(*) FROM schema_migrations`, 6)
+	assertCount(t, database, `SELECT COUNT(*) FROM schema_migrations`, 9)
 	assertCount(t, database, `SELECT COUNT(*) FROM pg_constraint WHERE conname = 'chk_idempotency_state'`, 1)
 	assertCount(t, database, `SELECT COUNT(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'idx_idempotency_in_progress'`, 1)
 }
@@ -418,8 +418,8 @@ func seedStreamer(t *testing.T, db *sql.DB) string {
 	t.Helper()
 	id := uuid.New().String()
 	if _, err := db.Exec(
-		`INSERT INTO streamers (id, email, display_name, password_hash) VALUES ($1, $2, $3, $4)`,
-		id, id+"@example.com", "Test Streamer", "$2a$12$placeholder",
+		`INSERT INTO streamers (id, email, display_name, handle, password_hash) VALUES ($1, $2, $3, $4, $5)`,
+		id, id+"@example.com", "Test Streamer", "test-"+id[:8], "$2a$12$placeholder",
 	); err != nil {
 		t.Fatalf("seed streamer: %v", err)
 	}

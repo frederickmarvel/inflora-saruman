@@ -92,7 +92,7 @@ func (r Runner) Run(ctx context.Context, direction Direction, target int64) erro
 			if target > 0 && m.Version > target {
 				break
 			}
-			if m.Name == "seed_dev" {
+			if strings.HasPrefix(m.Name, "seed_") {
 				if !r.IncludeSeed {
 					continue
 				}

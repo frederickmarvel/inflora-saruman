@@ -307,7 +307,7 @@ func postCapture(ctx context.Context, tx *sql.Tx, env events.Envelope, p topupCo
 			return nil, "", fmt.Errorf("ledger account %s: %w", post.account, err)
 		}
 		entryID := uuid.New()
-		if _, err := tx.ExecContext(ctx, `INSERT INTO ledger_entries (id,streamer_id,account_id,direction,amount_idr,entry_type,external_ref,donation_id,correlation_id,ledger_transaction_id,metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9,'{}')`, entryID, p.StreamerID, accountID, post.direction, post.amount, post.entryType, p.DonationID, correlationID, txID); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO ledger_entries (id,streamer_id,account_id,direction,amount_idr,entry_type,external_ref,donation_id,correlation_id,ledger_transaction_id,metadata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'{}')`, entryID, p.StreamerID, accountID, post.direction, post.amount, post.entryType, p.DonationID, p.DonationID, correlationID, txID); err != nil {
 			return nil, "", err
 		}
 		delta := post.amount

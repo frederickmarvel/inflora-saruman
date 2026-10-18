@@ -15,8 +15,8 @@ func TestLoadEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load migrations: %v", err)
 	}
-	if len(got) != 11 {
-		t.Fatalf("migration count = %d, want 11", len(got))
+	if len(got) != 12 {
+		t.Fatalf("migration count = %d, want 12", len(got))
 	}
 	if got[0].Version != 1 || got[0].Name != "init" {
 		t.Fatalf("first migration = %#v", got[0])
@@ -50,6 +50,9 @@ func TestLoadEmbeddedMigrations(t *testing.T) {
 	}
 	if got[10].Version != 11 || got[10].Name != "donation_review" {
 		t.Fatalf("eleventh migration = %#v", got[10])
+	}
+	if got[11].Version != 12 || got[11].Name != "ledger_source_tag" {
+		t.Fatalf("twelfth migration = %#v", got[11])
 	}
 	for _, migration := range got {
 		if migration.Up == "" || migration.Down == "" || len(migration.Checksum) != 64 {

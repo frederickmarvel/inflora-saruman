@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/frederickmarvel/inflora-saruman/internal/ledger"
 	"github.com/frederickmarvel/inflora-saruman/internal/service"
 	"github.com/frederickmarvel/inflora-shared/events"
 	"github.com/frederickmarvel/inflora-shared/inbox"
@@ -279,7 +280,7 @@ func postCapture(ctx context.Context, tx *sql.Tx, env events.Envelope, p topupCo
 	if err != nil {
 		return nil, "", err
 	}
-	res, err := tx.ExecContext(ctx, `INSERT INTO ledger_transactions (id,operation_key,correlation_id,causation_id,transaction_type,streamer_id,metadata) VALUES ($1,$2,$3,$3,'DONATION_CAPTURE',$4,$5) ON CONFLICT (operation_key) DO NOTHING`, txID, opKey, correlationID, p.StreamerID, metadata)
+	res, err := tx.ExecContext(ctx, `INSERT INTO ledger_transactions (id,operation_key,correlation_id,causation_id,transaction_type,streamer_id,metadata,source_tag) VALUES ($1,$2,$3,$3,'DONATION_CAPTURE',$4,$5,$6) ON CONFLICT (operation_key) DO NOTHING`, txID, opKey, correlationID, p.StreamerID, metadata, ledger.SourceDonation)
 	if err != nil {
 		return nil, "", err
 	}

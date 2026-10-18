@@ -1,0 +1,7 @@
+DROP INDEX IF EXISTS idx_donations_live_session;
+ALTER TABLE donations DROP COLUMN IF EXISTS live_session_id;
+ALTER TABLE donations DROP COLUMN IF EXISTS widget_id;
+ALTER TABLE donations DROP COLUMN IF EXISTS quantity;
+ALTER TABLE donations DROP COLUMN IF EXISTS tier;
+ALTER TABLE donations DROP COLUMN IF EXISTS media;
+ALTER TABLE donations DROP COLUMN IF EXISTS call;

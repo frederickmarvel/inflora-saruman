@@ -18,10 +18,13 @@ import (
 )
 
 const (
-	IntentCreatedSubject = "donation.intent.created.v1.>"
-	TopupCompletedType   = "pg.gateway.topup.completed.v1"
-	TopupFailedType      = "pg.gateway.topup.failed.v1"
-	TopupExpiredType     = "pg.gateway.topup.expired.v1"
+	IntentCreatedSubject     = "donation.intent.created.v1.>"
+	TopupCompletedType       = "pg.gateway.topup.completed.v1"
+	TopupFailedType          = "pg.gateway.topup.failed.v1"
+	TopupExpiredType         = "pg.gateway.topup.expired.v1"
+	TopupSettledType         = "pg.gateway.topup.settled.v1"
+	WithdrawalCompletedType  = "pg.gateway.withdrawal.completed.v1"
+	WithdrawalFailedType     = "pg.gateway.withdrawal.failed.v1"
 )
 
 type Processor struct{ DB *sql.DB }

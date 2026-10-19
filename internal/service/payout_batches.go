@@ -110,9 +110,16 @@ func assignToBatch(ctx context.Context, tx *sql.Tx, batchID, payoutID uuid.UUID,
 	if err := tx.QueryRowContext(ctx, `SELECT account_number_last4 FROM streamer_bank_accounts WHERE id=$1`, p.BankAccountID).Scan(&bankLast4); err != nil {
 		return 0, fmt.Errorf("payout: batch bank lookup: %w", err)
 	}
+	// The running batch total INCLUDING this member — prior members assigned in
+	// the same transaction are visible here, so the event's BatchTotalIDR is
+	// always the batch's true total at assignment time.
+	var batchTotal int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(amount_idr),0) FROM payouts WHERE batch_id=$1`, batchID).Scan(&batchTotal); err != nil {
+		return 0, fmt.Errorf("payout: batch total lookup: %w", err)
+	}
 	payload := events.PayoutBatchedEvent{
 		BatchID: batchID.String(), PayoutID: payoutID.String(), StreamerID: p.StreamerID.String(),
-		AmountIDR: p.AmountIDR, BankAccountLast4: bankLast4,
+		AmountIDR: p.AmountIDR, BankAccountLast4: bankLast4, BatchTotalIDR: batchTotal,
 		BatchPayoutCount: fifoPosition + 1, FIFOPosition: fifoPosition, BatchedAt: time.Now().UTC(),
 	}
 	if err := enqueuePayoutEvent(ctx, tx, events.PayoutBatched, payoutID, p.StreamerID, payload); err != nil {
@@ -299,8 +306,11 @@ func SubmitBatch(ctx context.Context, db *sql.DB, batchID uuid.UUID, lease time.
 			}
 			payload := events.PayoutBatchExecutedEvent{
 				BatchID: batchID.String(), PayoutID: m.id.String(), StreamerID: m.streamerID.String(),
-				AmountIDR: m.amount, ProviderBatchID: batchID.String(),
-				ProviderName: b.ProviderName.String, ExecutedAt: executedAt,
+				AmountIDR: m.amount,
+				// No provider bulk-disbursement API exists (03 §6): the fields
+				// stay empty rather than fabricating a provider batch id.
+				ProviderBatchID: "", ProviderName: "",
+				ExecutedAt: executedAt,
 			}
 			if err := enqueuePayoutEvent(ctx, tx, events.PayoutBatchExecuted, m.id, m.streamerID, payload); err != nil {
 				return err
@@ -328,8 +338,12 @@ func CloseBatch(ctx context.Context, db *sql.DB, batchID uuid.UUID, resolutionNo
 		if b.Status != BatchPartialFailed {
 			return ErrPayoutBatchIllegalState
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE payout_batches SET resolution_note=$2,completed_at=NOW() WHERE id=$1`, batchID, resolutionNote); err != nil {
+		res, err := tx.ExecContext(ctx, `UPDATE payout_batches SET resolution_note=$2,completed_at=NOW() WHERE id=$1 AND resolution_note IS NULL`, batchID, resolutionNote)
+		if err != nil {
 			return err
+		}
+		if n, _ := res.RowsAffected(); n != 1 {
+			return nil // already closed: annotation and the completion event are once-only
 		}
 		var settled, failed int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FILTER (WHERE status='SETTLED'),COUNT(*) FILTER (WHERE status='FAILED') FROM payouts WHERE batch_id=$1`, batchID).Scan(&settled, &failed); err != nil {

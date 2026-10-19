@@ -85,15 +85,17 @@ func (h *PayoutCommandHandler) Handle(w http.ResponseWriter, r *http.Request) {
 			status = http.StatusNotFound
 		case "IDEMPOTENCY_CONFLICT", "GATEWAY_PENDING", "ILLEGAL_TRANSITION", "STATE_CONFLICT":
 			status = http.StatusConflict
-		case "INSUFFICIENT_BALANCE", "BELOW_MIN_WITHDRAWAL", "VALIDATION_FAILED":
+		case "INSUFFICIENT_BALANCE", "BELOW_MIN_WITHDRAWAL":
 			status = http.StatusUnprocessableEntity
+		case "VALIDATION_FAILED":
+			status = http.StatusBadRequest
 		case "STREAMER_HOLD_ACTIVE":
 			status = http.StatusForbidden
 		default:
 			status = http.StatusInternalServerError
 		}
 		if errors.Is(err, service.ErrPayoutBankNotVerified) {
-			status = http.StatusUnprocessableEntity
+			status = http.StatusBadRequest
 			code, message = "VALIDATION_FAILED", "bank account must be verified"
 		}
 		body = map[string]any{"error": map[string]string{"code": code, "message": message}}

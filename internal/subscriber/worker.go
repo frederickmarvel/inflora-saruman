@@ -24,6 +24,12 @@ func (w *Worker) Run(ctx context.Context) error {
 		{TopupCompletedType + ".>", "saruman-topup-completed"},
 		{TopupFailedType + ".>", "saruman-topup-failed"},
 		{TopupExpiredType + ".>", "saruman-topup-expired"},
+		// Phase C payout-family closures (D-052/D-055): the settled event is
+		// the dev payment-settlement closure, the withdrawal pair closes
+		// PROCESSING payouts.
+		{TopupSettledType + ".>", "saruman-topup-settled"},
+		{WithdrawalCompletedType + ".>", "saruman-withdrawal-completed"},
+		{WithdrawalFailedType + ".>", "saruman-withdrawal-failed"},
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

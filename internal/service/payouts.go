@@ -42,12 +42,15 @@ const DefaultPayoutLease = 15 * time.Minute
 
 // transition admits exactly the registered transitions from the Phase C
 // design (T7/D-055/D-057): REQUESTED -> {BATCHED, PROCESSING, NEEDS_REVIEW},
-// BATCHED -> {REQUESTED, PROCESSING}, PROCESSING -> {SETTLED, FAILED,
-// NEEDS_REVIEW}, NEEDS_REVIEW -> {PROCESSING, SETTLED, FAILED}. Settled and
-// failed are terminal. No other transition is registered.
+// BATCHED -> {REQUESTED, PROCESSING, NEEDS_REVIEW}, PROCESSING -> {SETTLED,
+// FAILED, NEEDS_REVIEW}, NEEDS_REVIEW -> {PROCESSING, SETTLED, FAILED}.
+// Settled and failed are terminal. BATCHED -> NEEDS_REVIEW is the
+// provider-event park registered by CONTRACT_DRIFT D-059 (the member is
+// detached from its batch, so a late DRAFT cancel never trips the FK). No
+// other transition is registered.
 var payoutTransitions = map[string]map[string]bool{
 	PayoutRequested:   {PayoutBatched: true, PayoutProcessing: true, PayoutNeedsReview: true},
-	PayoutBatched:     {PayoutRequested: true, PayoutProcessing: true},
+	PayoutBatched:     {PayoutRequested: true, PayoutProcessing: true, PayoutNeedsReview: true},
 	PayoutProcessing:  {PayoutSettled: true, PayoutFailed: true, PayoutNeedsReview: true},
 	PayoutNeedsReview: {PayoutProcessing: true, PayoutSettled: true, PayoutFailed: true},
 	PayoutSettled:     {},
@@ -336,7 +339,18 @@ func WithdrawalCompleted(ctx context.Context, db *sql.DB, in WithdrawalCompleted
 			return nil // terminal outcome already recorded; never regress
 		case PayoutRequested, PayoutBatched:
 			// Provider completed before any submit bookkeeping: park for
-			// operator resolution; rare, reserved money stays escrowed.
+			// operator resolution; rare, reserved money stays escrowed. A
+			// BATCHED member is detached so DRAFT-cancel keeps working and
+			// batch counters stay truthful (CONTRACT_DRIFT D-059).
+			if p.Status == PayoutBatched {
+				if _, err := tx.ExecContext(ctx, `UPDATE payout_batches SET total_amount_idr=total_amount_idr-$1,payout_count=payout_count-1 WHERE id=$2`, p.AmountIDR, p.BatchID.UUID); err != nil {
+					return err
+				}
+				res, err := tx.ExecContext(ctx, `UPDATE payouts SET status='NEEDS_REVIEW',failure_reason=$2,batch_id=NULL WHERE id=$1`, p.ID, "PROVIDER_COMPLETED_BEFORE_SUBMIT")
+				out.Status = PayoutNeedsReview
+				out.Changed = res != nil
+				return err
+			}
 			res, err := tx.ExecContext(ctx, `UPDATE payouts SET status='NEEDS_REVIEW',failure_reason=$2 WHERE id=$1`, p.ID, "PROVIDER_COMPLETED_BEFORE_SUBMIT")
 			out.Status = PayoutNeedsReview
 			out.Changed = res != nil
@@ -366,7 +380,7 @@ func WithdrawalCompleted(ctx context.Context, db *sql.DB, in WithdrawalCompleted
 			if settledAt.IsZero() {
 				settledAt = time.Now().UTC()
 			}
-			res, err := tx.ExecContext(ctx, `UPDATE payouts SET status='SETTLED',settled_at=$2,provider_payout_id=$3,last_event_id=$4 WHERE id=$1 AND status='PROCESSING'`, p.ID, settledAt, in.ProviderPayoutID, in.EventID)
+			res, err := tx.ExecContext(ctx, `UPDATE payouts SET status='SETTLED',settled_at=$2,provider_payout_id=$3,last_event_id=$4 WHERE id=$1 AND status='PROCESSING'`, p.ID, settledAt, in.ProviderPayoutID, toNullUUID(in.EventID))
 			if err != nil {
 				return err
 			}
@@ -440,6 +454,19 @@ func WithdrawalFailed(ctx context.Context, db *sql.DB, in WithdrawalFailedInput)
 			return nil // late duplicate or already-reviewed: stable
 		case PayoutRequested, PayoutBatched:
 			reason := surfaceSafeReason(in.FailureReason, in.ProviderError)
+			// A BATCHED member is detached before the park so DRAFT-cancel
+			// keeps working and batch counters stay truthful (D-059).
+			if p.Status == PayoutBatched {
+				if _, err := tx.ExecContext(ctx, `UPDATE payout_batches SET total_amount_idr=total_amount_idr-$1,payout_count=payout_count-1 WHERE id=$2`, p.AmountIDR, p.BatchID.UUID); err != nil {
+					return err
+				}
+				if _, err := tx.ExecContext(ctx, `UPDATE payouts SET status='NEEDS_REVIEW',failure_reason=$2,batch_id=NULL WHERE id=$1`, p.ID, reason); err != nil {
+					return err
+				}
+				out.Status = PayoutNeedsReview
+				out.Changed = true
+				return nil
+			}
 			if _, err := tx.ExecContext(ctx, `UPDATE payouts SET status='NEEDS_REVIEW',failure_reason=$2 WHERE id=$1`, p.ID, reason); err != nil {
 				return err
 			}
@@ -455,7 +482,7 @@ func WithdrawalFailed(ctx context.Context, db *sql.DB, in WithdrawalFailedInput)
 			if failedAt.IsZero() {
 				failedAt = time.Now().UTC()
 			}
-			res, err := tx.ExecContext(ctx, `UPDATE payouts SET status='FAILED',failure_reason=$2,last_event_id=$3 WHERE id=$1 AND status='PROCESSING'`, p.ID, reason, in.EventID)
+			res, err := tx.ExecContext(ctx, `UPDATE payouts SET status='FAILED',failure_reason=$2,last_event_id=$3 WHERE id=$1 AND status='PROCESSING'`, p.ID, reason, toNullUUID(in.EventID))
 			if err != nil {
 				return err
 			}
@@ -661,7 +688,7 @@ func RefreshProviderState(ctx context.Context, db *sql.DB, payoutID uuid.UUID) (
 	err := db.QueryRowContext(ctx, `SELECT COALESCE(gw.last_known_provider_status,''),COALESCE(gw.provider_payout_id,''),COALESCE(gw.bank_account_ref,''),COALESCE(p.status::text,'') FROM gateway_withdrawals gw JOIN payouts p ON p.id=gw.saruman_payout_id WHERE gw.saruman_payout_id=$1 ORDER BY gw.created_at DESC LIMIT 1`, payoutID).
 		Scan(&status, &providerPayoutID, &bankRef, &providerErr)
 	if errors.Is(err, sql.ErrNoRows) {
-		return CompletionOutcome{}, ErrPayoutNotFound
+		return CompletionOutcome{}, ErrPayoutGatewayPending
 	}
 	if err != nil {
 		return CompletionOutcome{}, err

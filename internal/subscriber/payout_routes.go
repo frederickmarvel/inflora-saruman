@@ -66,17 +66,13 @@ func (p *Processor) withdrawalCompletedHandler(ctx context.Context, tx *sql.Tx, 
 	if env.StreamerID == nil || *env.StreamerID != payload.StreamerID {
 		return errors.New("withdrawal completed event streamer mismatch")
 	}
+	// Frozen s4 template: the posting correlation is always the inbox
+	// event's own event id — never a causation-chain correlation id.
 	eventID := uuid.MustParse(env.EventID)
-	correlation := eventID
-	if env.CorrelationID != "" {
-		if parsed, err := uuid.Parse(env.CorrelationID); err == nil {
-			correlation = parsed
-		}
-	}
 	_, err = service.WithdrawalCompleted(ctx, p.DB, service.WithdrawalCompletedInput{
 		PayoutID: payoutID, StreamerID: streamerID,
 		ProviderPayoutID: payload.ProviderPayoutID, BankAccountRef: payload.BankAccountRef,
-		SettledAt: payload.SettledAt, EventID: eventID, CorrelationID: correlation,
+		SettledAt: payload.SettledAt, EventID: eventID, CorrelationID: eventID,
 	})
 	return err
 }
@@ -100,17 +96,13 @@ func (p *Processor) withdrawalFailedHandler(ctx context.Context, tx *sql.Tx, env
 	if env.StreamerID == nil || *env.StreamerID != payload.StreamerID {
 		return errors.New("withdrawal failed event streamer mismatch")
 	}
+	// Frozen s5 template: the posting correlation is always the inbox
+	// event's own event id — never a causation-chain correlation id.
 	eventID := uuid.MustParse(env.EventID)
-	correlation := eventID
-	if env.CorrelationID != "" {
-		if parsed, err := uuid.Parse(env.CorrelationID); err == nil {
-			correlation = parsed
-		}
-	}
 	_, err = service.WithdrawalFailed(ctx, p.DB, service.WithdrawalFailedInput{
 		PayoutID: payoutID, StreamerID: streamerID,
 		FailureReason: payload.FailureReason, ProviderError: payload.ProviderError,
-		FailedAt: payload.FailedAt, EventID: eventID, CorrelationID: correlation,
+		FailedAt: payload.FailedAt, EventID: eventID, CorrelationID: eventID,
 	})
 	return err
 }
@@ -131,7 +123,7 @@ func (p *Processor) settleTopupHandler(ctx context.Context, tx *sql.Tx, env even
 	var amount, mdr, platformFee, netIDR int64
 	var intentID, donationID, providerName string
 	var capturedAt time.Time
-	err := tx.QueryRowContext(ctx, `SELECT id,intent_id,status::text,settlement_status::text,currency,amount_idr,mdr_idr,platform_fee_idr,net_idr,provider_name,charged_at FROM donations WHERE id=$1 FOR UPDATE`, payload.DonationID).
+	err := tx.QueryRowContext(ctx, `SELECT id,intent_id,status::text,settlement_status::text,currency,amount_idr,mdr_idr,platform_fee_idr,net_idr,COALESCE(provider_name,''),COALESCE(charged_at,'epoch'::timestamptz) FROM donations WHERE id=$1 FOR UPDATE`, payload.DonationID).
 		Scan(&donationID, &intentID, &status, &settlement, &currency, &amount, &mdr, &platformFee, &netIDR, &providerName, &capturedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("topup settled: donation %s not found", payload.DonationID)
@@ -142,9 +134,21 @@ func (p *Processor) settleTopupHandler(ctx context.Context, tx *sql.Tx, env even
 	if intentID != payload.IntentID || donationID != payload.DonationID {
 		return errors.New("topup settled event does not match donation")
 	}
-	if status != "CHARGED" || settlement != "PENDING" {
+	switch {
+	case status == "CHARGED" && settlement == "PENDING":
+		// The claimsable settlement: proceed to the §2 posting below.
+	case status == "CHARGED":
 		// Late or duplicate closure: a distinct settlement result must never
-		// regress a terminal donation. Record the event and move on.
+		// regress an already-settled (or otherwise terminal) donation.
+		return nil
+	case status == "INTENT_CREATED" || status == "PENDING":
+		// The completed and settled events leave the same provider
+		// transaction but ride distinct subjects: this consumer can win the
+		// race. NAK so NATS redelivers once the capture lands. Bounded by
+		// MaxDeliver; a genuinely-orphaned settled event is then dropped.
+		return errors.New("topup settled received before donation charged")
+	default:
+		// FAILED / EXPIRED / unknown terminal: never regress via settlement.
 		return nil
 	}
 	if err := ensureAccounts(ctx, tx, payload.StreamerID); err != nil {

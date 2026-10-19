@@ -81,7 +81,7 @@ func TestPostgresMigrationPhase1UpDownReUp(t *testing.T) {
 		t.Fatalf("re-up: %v", err)
 	}
 	// After applying all migrations.
-	assertCount(t, database, `SELECT COUNT(*) FROM schema_migrations`, 12)
+	assertCount(t, database, `SELECT COUNT(*) FROM schema_migrations`, 13)
 	assertCount(t, database, `SELECT COUNT(*) FROM pg_constraint WHERE conname = 'chk_idempotency_state'`, 1)
 	assertCount(t, database, `SELECT COUNT(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'idx_idempotency_in_progress'`, 1)
 }
@@ -477,3 +477,63 @@ func intersectAny(a, b []string) bool {
 
 // Compile-time guards.
 var _ = errors.New
+
+// TestSupporterIdentityMigration covers 00013 (D-035/D-044 A-3): the physical
+// supporters bridge table, the donations identity columns, and — critically —
+// that the frozen token_purpose enum is untouched (auth is deferred to Phase
+// A; no supporter session scheme ships with this migration).
+func TestSupporterIdentityMigration(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	database, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if _, err = database.ExecContext(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
+	runner := migrate.Runner{DB: database, FS: migrations.Files, Environment: "test", AllowDown: true, IncludeSeed: true, LockTimeout: 5 * time.Second}
+	if err = runner.Run(ctx, migrate.Up, 0); err != nil {
+		t.Fatalf("up all: %v", err)
+	}
+
+	// supporters: exactly the A-3 bridge shape — no password_hash (Firebase
+	// auth deferred, owner ack 2026-10-18).
+	assertCount(t, database, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='supporters'`, 8)
+	assertCount(t, database, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='supporters' AND column_name IN ('email','display_name','firebase_uid','is_active','last_login_at')`, 5)
+	assertCount(t, database, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='supporters' AND column_name='password_hash'`, 0)
+	// donations identity columns + FK + partial index.
+	assertCount(t, database, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='donations' AND column_name IN ('supporter_id','claimed_at')`, 2)
+	assertCount(t, database, `SELECT COUNT(*) FROM pg_constraint WHERE conname = 'donations_supporter_id_fkey' AND contype='f'`, 1)
+	assertCount(t, database, `SELECT COUNT(*) FROM pg_indexes WHERE schemaname='public' AND indexname='idx_donations_supporter'`, 1)
+	// Frozen-enum regression: token_purpose stays exactly (SESSION, OVERLAY).
+	assertCount(t, database, `SELECT COUNT(*) FROM pg_enum e JOIN pg_type t ON t.oid=e.enumtypid WHERE t.typname='token_purpose'`, 2)
+	assertCount(t, database, `SELECT COUNT(*) FROM pg_enum e JOIN pg_type t ON t.oid=e.enumtypid WHERE t.typname='token_purpose' AND e.enumlabel IN ('SESSION','OVERLAY')`, 2)
+
+	// Row-level: a supporter can be written and both NULL and set
+	// supporter_id are accepted (guest tips stay anonymous).
+	var sid string
+	if err = database.QueryRowContext(ctx, `INSERT INTO supporters (email, display_name) VALUES ('donor@example.com','Donor') RETURNING id`).Scan(&sid); err != nil {
+		t.Fatalf("insert supporter: %v", err)
+	}
+	if _, err = database.ExecContext(ctx, `UPDATE donations SET supporter_id=$1, claimed_at=NOW() WHERE id=(SELECT id FROM donations ORDER BY id LIMIT 1)`, sid); err != nil {
+		t.Fatalf("claim oldest donation: %v", err)
+	}
+	assertCount(t, database, `SELECT COUNT(*) FROM donations WHERE supporter_id = $1`, 1, sid)
+	assertCount(t, database, `SELECT COUNT(*) FROM donations WHERE supporter_id IS NULL`, 1) // second seed row stays anonymous
+
+	// Down/up: columns and table disappear cleanly, then return.
+	if err = runner.Run(ctx, migrate.Down, 12); err != nil {
+		t.Fatalf("down 00013: %v", err)
+	}
+	assertCount(t, database, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='supporters'`, 0)
+	assertCount(t, database, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='donations' AND column_name IN ('supporter_id','claimed_at')`, 0)
+	if err = runner.Run(ctx, migrate.Up, 0); err != nil {
+		t.Fatalf("re-up: %v", err)
+	}
+	assertCount(t, database, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='supporters'`, 1)
+}

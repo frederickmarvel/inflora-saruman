@@ -81,7 +81,7 @@ func TestPostgresMigrationPhase1UpDownReUp(t *testing.T) {
 		t.Fatalf("re-up: %v", err)
 	}
 	// After applying all migrations.
-	assertCount(t, database, `SELECT COUNT(*) FROM schema_migrations`, 13)
+	assertCount(t, database, `SELECT COUNT(*) FROM schema_migrations`, 15)
 	assertCount(t, database, `SELECT COUNT(*) FROM pg_constraint WHERE conname = 'chk_idempotency_state'`, 1)
 	assertCount(t, database, `SELECT COUNT(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'idx_idempotency_in_progress'`, 1)
 }
@@ -536,4 +536,95 @@ func TestSupporterIdentityMigration(t *testing.T) {
 		t.Fatalf("re-up: %v", err)
 	}
 	assertCount(t, database, `SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='supporters'`, 1)
+}
+
+// TestPayoutWithdrawalsMigration verifies 00014's payout-robustness growth
+// (D-047..D-058) and the 00016 dev seed: enum growth, claim/lease columns,
+// batch custody, gateway mirror columns, the DISBURSED balance surfacing, and
+// a clean down/re-up — including the enum rebuilds that must drop the new
+// values' data rows first.
+func TestPayoutWithdrawalsMigration(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL is not set")
+	}
+	ctx := context.Background()
+	database, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	t.Cleanup(func() { _ = database.Close() })
+	if _, err = database.ExecContext(ctx, `DROP SCHEMA public CASCADE; CREATE SCHEMA public`); err != nil {
+		t.Fatalf("reset schema: %v", err)
+	}
+	runner := migrate.Runner{DB: database, FS: migrations.Files, Environment: "test", AllowDown: true, IncludeSeed: true, LockTimeout: 5 * time.Second}
+	if err = runner.Run(ctx, migrate.Up, 0); err != nil {
+		t.Fatalf("up all: %v", err)
+	}
+
+	// Enum growth: payout_status gains NEEDS_REVIEW, ledger_account_type gains
+	// DISBURSED, ledger_entry_type gains STREAMER_DISBURSED_CREDIT (D-048).
+	assertCount(t, database, `SELECT COUNT(*) FROM pg_enum e JOIN pg_type t ON t.oid=e.enumtypid WHERE t.typname='payout_status' AND e.enumlabel='NEEDS_REVIEW'`, 1)
+	assertCount(t, database, `SELECT COUNT(*) FROM pg_enum e JOIN pg_type t ON t.oid=e.enumtypid WHERE t.typname='ledger_account_type' AND e.enumlabel='DISBURSED'`, 1)
+	assertCount(t, database, `SELECT COUNT(*) FROM pg_enum e JOIN pg_type t ON t.oid=e.enumtypid WHERE t.typname='ledger_entry_type' AND e.enumlabel='STREAMER_DISBURSED_CREDIT'`, 1)
+	// Payout claim/lease columns + physical batch FK (D-055/D-057).
+	assertCount(t, database, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='payouts' AND column_name IN ('attempts','lease_expires_at','last_event_id')`, 3)
+	assertCount(t, database, `SELECT COUNT(*) FROM pg_constraint WHERE conname='fk_payouts_batch' AND contype='f'`, 1)
+	// Batch custody columns (D-054).
+	assertCount(t, database, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='payout_batches' AND column_name IN ('submitted_by','approved_by','paused','resolution_note')`, 4)
+	// Gateway mirror columns + one-attempt-per-payout unique index.
+	assertCount(t, database, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='gateway_withdrawals' AND column_name IN ('provider_name','provider_payout_id','bank_account_ref','status_checked_at','last_known_provider_status')`, 5)
+	assertCount(t, database, `SELECT COUNT(*) FROM pg_indexes WHERE schemaname='public' AND indexname='uq_gw_withdrawal_provider_payout'`, 1)
+	// Recon deferral kind (D-058).
+	assertCount(t, database, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='reconciliation_drift' AND column_name='kind'`, 1)
+	// Balance surface gained the disbursed tracker (D-048).
+	assertCount(t, database, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='v_streamer_balances' AND column_name='disbursed_idr'`, 1)
+
+	// 00016 dev seed: verified PRIMARY bank rows for the two dev streamers.
+	assertCount(t, database, `SELECT COUNT(*) FROM streamer_bank_accounts WHERE palantir_ref IN ('pivot-bank-dev-1','pivot-bank-dev-2') AND is_verified`, 2)
+
+	// Row-level: the new payout state and account type accept rows; a provider
+	// mirror row is rejected twice for the same payout (unique index).
+	if _, err = database.ExecContext(ctx, `INSERT INTO payouts (streamer_id, amount_idr, bank_account_id) SELECT '00000000-0000-4000-8000-000000000001', 10000, id FROM streamer_bank_accounts WHERE palantir_ref='pivot-bank-dev-1'`); err != nil {
+		t.Fatalf("insert payout: %v", err)
+	}
+	var payoutID string
+	var bankRef string
+	if err = database.QueryRowContext(ctx, `UPDATE payouts SET status='NEEDS_REVIEW' WHERE streamer_id='00000000-0000-4000-8000-000000000001' RETURNING id`).Scan(&payoutID); err != nil {
+		t.Fatalf("needs-review payout row: %v", err)
+	}
+	if err = database.QueryRowContext(ctx, `SELECT palantir_ref FROM streamer_bank_accounts WHERE palantir_ref='pivot-bank-dev-1'`).Scan(&bankRef); err != nil {
+		t.Fatalf("seed bank row: %v", err)
+	}
+	if _, err = database.ExecContext(ctx, `INSERT INTO ledger_accounts (streamer_id, account_type) VALUES ('00000000-0000-4000-8000-000000000001', 'DISBURSED')`); err != nil {
+		t.Fatalf("insert disbursed account: %v", err)
+	}
+	if _, err = database.ExecContext(ctx, `INSERT INTO gateway_withdrawals (palantir_ref, saruman_payout_id, streamer_id, amount_idr, status, provider_name) VALUES ('gw-test-1', $1, '00000000-0000-4000-8000-000000000001', 10000, 'REQUESTED', 'pivot')`, payoutID); err != nil {
+		t.Fatalf("insert gateway withdrawal: %v", err)
+	}
+	if _, err = database.ExecContext(ctx, `INSERT INTO gateway_withdrawals (palantir_ref, saruman_payout_id, streamer_id, amount_idr, status, provider_name) VALUES ('gw-test-2', $1, '00000000-0000-4000-8000-000000000001', 10000, 'REQUESTED', 'pivot')`, payoutID); err == nil {
+		t.Fatal("expected duplicate provider attempt to violate the unique index")
+	}
+
+	// Down 00014: the rollback deletes rows holding the dropped enum values,
+	// rebuilds both enums, and strips the disbursed toggle from the balance view.
+	if err = runner.Run(ctx, migrate.Down, 13); err != nil {
+		t.Fatalf("down 00014: %v", err)
+	}
+	assertCount(t, database, `SELECT COUNT(*) FROM pg_enum e JOIN pg_type t ON t.oid=e.enumtypid WHERE t.typname='payout_status'`, 5)
+	assertCount(t, database, `SELECT COUNT(*) FROM pg_enum e JOIN pg_type t ON t.oid=e.enumtypid WHERE t.typname='ledger_account_type'`, 6)
+	assertCount(t, database, `SELECT COUNT(*) FROM pg_enum e JOIN pg_type t ON t.oid=e.enumtypid WHERE t.typname='ledger_entry_type'`, 10)
+	assertCount(t, database, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='v_streamer_balances' AND column_name='disbursed_idr'`, 0)
+	assertCount(t, database, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='payouts' AND column_name IN ('attempts','lease_expires_at','last_event_id')`, 0)
+	assertCount(t, database, `SELECT COUNT(*) FROM pg_indexes WHERE schemaname='public' AND indexname='uq_gw_withdrawal_provider_payout'`, 0)
+	assertCount(t, database, `SELECT COUNT(*) FROM ledger_accounts WHERE account_type::text = 'DISBURSED'`, 0)
+	assertCount(t, database, `SELECT COUNT(*) FROM payouts WHERE status::text = 'NEEDS_REVIEW'`, 0)
+
+	// Re-up: growth returns; the seeded bank rows come back.
+	if err = runner.Run(ctx, migrate.Up, 0); err != nil {
+		t.Fatalf("re-up: %v", err)
+	}
+	assertCount(t, database, `SELECT COUNT(*) FROM pg_enum e JOIN pg_type t ON t.oid=e.enumtypid WHERE t.typname='payout_status' AND e.enumlabel='NEEDS_REVIEW'`, 1)
+	assertCount(t, database, `SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='v_streamer_balances' AND column_name='disbursed_idr'`, 1)
+	assertCount(t, database, `SELECT COUNT(*) FROM streamer_bank_accounts WHERE palantir_ref IN ('pivot-bank-dev-1','pivot-bank-dev-2')`, 2)
 }

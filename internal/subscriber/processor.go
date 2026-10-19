@@ -60,7 +60,7 @@ func validateEnvelope(env events.Envelope) error {
 		if env.Producer != "ingest" && env.Producer != "ingest-api" {
 			return fmt.Errorf("subscriber: unexpected producer %q", env.Producer)
 		}
-	case TopupCompletedType, TopupFailedType, TopupExpiredType:
+	case TopupCompletedType, TopupFailedType, TopupExpiredType, events.PgGatewayTopupSettled, events.PgGatewayWithdrawalCompleted, events.PgGatewayWithdrawalFailed:
 		if env.Producer != "palantir" && env.Producer != "palantir-gateway" {
 			return fmt.Errorf("subscriber: unexpected producer %q", env.Producer)
 		}
@@ -81,6 +81,12 @@ func (p *Processor) route(eventType string) (string, inbox.Handler, error) {
 		return "saruman.topup-failed", p.failTopup, nil
 	case TopupExpiredType:
 		return "saruman.topup-expired", p.expireTopup, nil
+	case events.PgGatewayTopupSettled:
+		return "saruman.topup-settled", p.settleTopupHandler, nil
+	case events.PgGatewayWithdrawalCompleted:
+		return "saruman.withdrawal-completed", p.withdrawalCompletedHandler, nil
+	case events.PgGatewayWithdrawalFailed:
+		return "saruman.withdrawal-failed", p.withdrawalFailedHandler, nil
 	default:
 		return "", nil, fmt.Errorf("subscriber: unsupported event type %q", eventType)
 	}

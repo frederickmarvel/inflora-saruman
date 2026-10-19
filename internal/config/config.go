@@ -15,17 +15,24 @@ type Config struct {
 	NATSStream  string
 	AckWait     time.Duration
 	MaxDeliver  int
+	// Payout liveness knobs (Phase C, T13): payout leases bound the
+	// provider-attempt window (Submit/Retry raise it); the sweeper flags
+	// REQUESTED/PROCESSING rows whose reservation/lease predates 2x the lease.
+	PayoutLease         time.Duration
+	PayoutSweepInterval time.Duration
 }
 
 func Load() (Config, error) {
 	cfg := Config{
-		ServiceName: value("SERVICE_NAME", "saruman"),
-		HTTPAddr:    value("HTTP_ADDR", ":8082"),
-		DBDSN:       value("DB_DSN", "postgres://inflora:dev@localhost:5432/inflora?sslmode=disable"),
-		NATSURL:     value("NATS_URL", "nats://localhost:4222"),
-		NATSStream:  value("NATS_STREAM_NAME", "inflora-events"),
-		AckWait:     durationSeconds("NATS_ACK_WAIT_SEC", 30),
-		MaxDeliver:  integer("NATS_MAX_DELIVER", 5),
+		ServiceName:         value("SERVICE_NAME", "saruman"),
+		HTTPAddr:            value("HTTP_ADDR", ":8082"),
+		DBDSN:               value("DB_DSN", "postgres://inflora:dev@localhost:5432/inflora?sslmode=disable"),
+		NATSURL:             value("NATS_URL", "nats://localhost:4222"),
+		NATSStream:          value("NATS_STREAM_NAME", "inflora-events"),
+		AckWait:             durationSeconds("NATS_ACK_WAIT_SEC", 30),
+		MaxDeliver:          integer("NATS_MAX_DELIVER", 5),
+		PayoutLease:         durationSeconds("PAYOUT_LEASE_SEC", 900),
+		PayoutSweepInterval: durationSeconds("PAYOUT_SWEEP_INTERVAL_SEC", 60),
 	}
 	if cfg.ServiceName == "" || cfg.HTTPAddr == "" || cfg.DBDSN == "" || cfg.NATSURL == "" || cfg.NATSStream == "" {
 		return Config{}, fmt.Errorf("config: service, HTTP, database, NATS URL, and NATS stream are required")

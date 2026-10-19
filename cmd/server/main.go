@@ -61,13 +61,16 @@ func run(ctx context.Context) error {
 	mux.Handle("/", handler.HealthMux(db))
 	review := &handler.ReviewHandler{DB: db, InternalKey: internalKey}
 	mux.HandleFunc("POST /v1/internal/donations/{id}/review", review.Review)
+	payoutCommands := &handler.PayoutCommandHandler{DB: db, InternalKey: internalKey, Lease: cfg.PayoutLease}
+	mux.HandleFunc("POST /v1/internal/payout-commands", payoutCommands.Handle)
 
 	httpWorker := &handler.Server{HTTP: &http.Server{Addr: cfg.HTTPAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}}
 	eventWorker := &subscriber.Worker{Subscriber: natsSubscriber, Processor: &subscriber.Processor{DB: db}}
 	reviewReconciler := &service.ReviewReconciler{DB: db}
+	sweeper := &service.Sweeper{DB: db, Interval: cfg.PayoutSweepInterval, LeaseWindow: cfg.PayoutLease}
 	probe := func(probeCtx context.Context) (bool, error) {
 		err := db.PingContext(probeCtx)
 		return err == nil, err
 	}
-	return infloraruntime.Run(ctx, 15*time.Second, 10*time.Second, probe, httpWorker, eventWorker, reviewReconciler, dispatcher)
+	return infloraruntime.Run(ctx, 15*time.Second, 10*time.Second, probe, httpWorker, eventWorker, reviewReconciler, sweeper, dispatcher)
 }

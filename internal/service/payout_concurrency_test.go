@@ -63,19 +63,26 @@ func ccTestDB(t *testing.T) (setupDB, raceDB *sql.DB) {
 	if _, err := setupDB.ExecContext(ctx, `DROP SCHEMA IF EXISTS `+ccSchema+` CASCADE; CREATE SCHEMA `+ccSchema); err != nil {
 		t.Fatalf("cc: create schema: %v", err)
 	}
-	if _, err := setupDB.ExecContext(ctx, `SET search_path TO `+ccSchema); err != nil {
+	// The isolated schema stays first so every unqualified DDL lands in it,
+	// but public stays VISIBLE: 00015's citext extension is installed in
+	// public (created there by the internal/migrate suite in the same
+	// database, or created by 00015's own WITH SCHEMA public on a bare DB),
+	// and extensions exist database-wide — a second install is a no-op. With
+	// public pinned out of the path the type lookup fails 42704.
+	if _, err := setupDB.ExecContext(ctx, `SET search_path TO `+ccSchema+`, public`); err != nil {
 		t.Fatalf("cc: set search_path: %v", err)
 	}
 	ccApplyMigrations(t, setupDB)
 
 	// pgx v5 passes unknown DSN query parameters through as server runtime
 	// parameters, so every pooled connection of raceDB starts with the
-	// isolated schema as its search_path.
+	// isolated schema as its search_path (public second, for the citext
+	// extension — see the setup handle above).
 	raceDSN := dsn
 	if strings.Contains(raceDSN, "?") {
-		raceDSN += "&search_path=" + ccSchema
+		raceDSN += "&search_path=" + ccSchema + ",public"
 	} else {
-		raceDSN += "?search_path=" + ccSchema
+		raceDSN += "?search_path=" + ccSchema + ",public"
 	}
 	raceDB, err = sql.Open("pgx", raceDSN)
 	if err != nil {

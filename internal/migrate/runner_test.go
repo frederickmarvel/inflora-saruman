@@ -15,8 +15,8 @@ func TestLoadEmbeddedMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load migrations: %v", err)
 	}
-	if len(got) != 15 {
-		t.Fatalf("migration count = %d, want 15", len(got))
+	if len(got) != 16 {
+		t.Fatalf("migration count = %d, want 16", len(got))
 	}
 	if got[0].Version != 1 || got[0].Name != "init" {
 		t.Fatalf("first migration = %#v", got[0])
@@ -60,8 +60,11 @@ func TestLoadEmbeddedMigrations(t *testing.T) {
 	if got[13].Version != 14 || got[13].Name != "payout_withdrawals" {
 		t.Fatalf("fourteenth migration = %#v", got[13])
 	}
-	if got[14].Version != 16 || got[14].Name != "seed_payout_dev" {
+	if got[14].Version != 15 || got[14].Name != "firebase_identities_rbac" {
 		t.Fatalf("fifteenth migration = %#v", got[14])
+	}
+	if got[15].Version != 16 || got[15].Name != "seed_payout_dev" {
+		t.Fatalf("sixteenth migration = %#v", got[15])
 	}
 	for _, migration := range got {
 		if migration.Up == "" || migration.Down == "" || len(migration.Checksum) != 64 {

@@ -81,7 +81,7 @@ func TestPostgresMigrationPhase1UpDownReUp(t *testing.T) {
 		t.Fatalf("re-up: %v", err)
 	}
 	// After applying all migrations.
-	assertCount(t, database, `SELECT COUNT(*) FROM schema_migrations`, 15)
+	assertCount(t, database, `SELECT COUNT(*) FROM schema_migrations`, 16)
 	assertCount(t, database, `SELECT COUNT(*) FROM pg_constraint WHERE conname = 'chk_idempotency_state'`, 1)
 	assertCount(t, database, `SELECT COUNT(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname = 'idx_idempotency_in_progress'`, 1)
 }

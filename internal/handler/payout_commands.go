@@ -184,7 +184,7 @@ func (h *PayoutCommandHandler) dispatch(r *http.Request, env payoutCommandEnvelo
 			}
 			ids = append(ids, id)
 		}
-		out, err := service.CreateBatch(ctx, h.DB, createdBy, ids)
+		out, err := service.CreateBatch(ctx, h.DB, createdBy, ids, nil)
 		if err != nil {
 			return 0, nil, err
 		}

@@ -68,9 +68,22 @@ func run(ctx context.Context) error {
 	eventWorker := &subscriber.Worker{Subscriber: natsSubscriber, Processor: &subscriber.Processor{DB: db}}
 	reviewReconciler := &service.ReviewReconciler{DB: db}
 	sweeper := &service.Sweeper{DB: db, Interval: cfg.PayoutSweepInterval, LeaseWindow: cfg.PayoutLease}
+	workers := []infloraruntime.Worker{httpWorker, eventWorker, reviewReconciler, sweeper, dispatcher}
+	// Nightly withdrawal batching (D-062): off by default in dev; enable with
+	// NIGHTLY_BATCH_ENABLED=true plus a NIGHTLY_BATCH_HOUR_UTC matching the
+	// current hour for an immediate E2E sweep.
+	if cfg.NightlyBatchEnabled {
+		batcher := &service.NightlyBatcher{
+			DB:            db,
+			HourUTC:       cfg.NightlyBatchHourUTC,
+			CheckInterval: cfg.NightlyBatchCheckInterval,
+			ActorAdminID:  cfg.NightlyBatchActorAdminID,
+		}
+		workers = append(workers, batcher)
+	}
 	probe := func(probeCtx context.Context) (bool, error) {
 		err := db.PingContext(probeCtx)
 		return err == nil, err
 	}
-	return infloraruntime.Run(ctx, 15*time.Second, 10*time.Second, probe, httpWorker, eventWorker, reviewReconciler, sweeper, dispatcher)
+	return infloraruntime.Run(ctx, 15*time.Second, 10*time.Second, probe, workers...)
 }

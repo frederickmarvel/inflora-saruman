@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -50,14 +51,25 @@ type CreateBatchResult struct {
 
 // CreateBatch creates a finops payout batch, optionally seeding it with
 // REQUESTED payouts (each claimed and moved to BATCHED with counters and a
-// payout.batched.v1 event inside the same transaction).
-func CreateBatch(ctx context.Context, db *sql.DB, createdBy uuid.UUID, payoutIDs []uuid.UUID) (CreateBatchResult, error) {
+// payout.batched.v1 event inside the same transaction). metadata (nil for
+// none) is stored as JSONB — the nightly batcher marks its runs with
+// {"batch_kind":"nightly","run_date":"YYYY-MM-DD"} so the partial unique
+// index (00017) enforces one batch per date.
+func CreateBatch(ctx context.Context, db *sql.DB, createdBy uuid.UUID, payoutIDs []uuid.UUID, metadata map[string]string) (CreateBatchResult, error) {
 	if createdBy == uuid.Nil {
 		return CreateBatchResult{}, ErrPayoutValidation
 	}
+	var metadataJSON []byte
+	var err error
+	if len(metadata) > 0 {
+		metadataJSON, err = json.Marshal(metadata)
+		if err != nil {
+			return CreateBatchResult{}, fmt.Errorf("payout: batch metadata: %w", err)
+		}
+	}
 	out := CreateBatchResult{BatchID: uuid.New()}
-	err := runSerializable(ctx, db, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `INSERT INTO payout_batches (id,created_by) VALUES ($1,$2)`, out.BatchID, createdBy)
+	err = runSerializable(ctx, db, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx, `INSERT INTO payout_batches (id,created_by,metadata) VALUES ($1,$2,$3)`, out.BatchID, createdBy, metadataJSON)
 		if err != nil {
 			return fmt.Errorf("payout: create batch: %w", err)
 		}
